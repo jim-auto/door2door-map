@@ -5,7 +5,7 @@
 ## デモ
 
 GitHub Pages で公開:
-`https://<your-username>.github.io/door2door-map/`
+https://jim-auto.github.io/door2door-map/
 
 ## 概要
 
