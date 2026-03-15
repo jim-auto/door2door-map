@@ -11,6 +11,8 @@ https://jim-auto.github.io/door2door-map/
 
 通勤や引っ越しの検討時に「この駅から30分で、どのくらいの範囲に行けるのか？」をざっくり把握するためのツールです。
 
+OpenStreetMap の実在する鉄道駅データを使い、交通経路ベースの到達圏ポリゴンを事前計算して表示します。
+
 ### 対応駅
 
 | 都市 | 駅 |
@@ -24,27 +26,27 @@ https://jim-auto.github.io/door2door-map/
 
 1. ドロップダウンから駅を選択
 2. スライダーで移動時間（10〜60分）を設定
-3. 地図上に到達可能範囲が円で表示されます
-   - **青い円**: 電車での移動圏
-   - **緑の破線円**: 徒歩での移動圏
+3. 地図上に到達可能範囲がポリゴンで表示されます
 
-## 簡易モデルについて
+## モデルについて
 
-このアプリは **簡易的な移動モデル** を使用しています。
+このアプリは、実在する駅の位置データと簡易的な移動モデルを組み合わせて到達圏を算出しています。
 
-| 移動手段 | 速度 |
-|----------|------|
-| 徒歩 | 5 km/h |
-| 電車 | 40 km/h |
+### 計算方法
 
-指定された時間と速度から「直線距離での到達可能範囲」を円として描画します。
+1. **Overpass API** で各ハブ駅の周辺 35km 以内の鉄道駅を取得
+2. 各駅への所要時間を推定:
+   - 直線距離 × 迂回係数 (1.3) / 電車速度 (40 km/h)
+   - 停車駅ペナルティ: 約 2km ごとに 1 駅、1 駅あたり +1 分
+3. 残り時間で徒歩圏 (5 km/h) をバッファとして追加
+4. 全バッファを結合してポリゴン化
 
-**以下の要素は考慮していません：**
+### 考慮していない要素
 
-- 実際の鉄道路線・ダイヤ
+- 実際の鉄道ダイヤ・運行頻度
 - 乗換時間・待ち時間
-- 道路や地形による迂回
-- 駅間の実移動経路
+- 急行・特急の速度差
+- 道路・地形による迂回
 
 あくまで「概算でどの程度の範囲か」を把握するためのツールです。
 
@@ -52,17 +54,26 @@ https://jim-auto.github.io/door2door-map/
 
 - HTML / CSS / JavaScript（フレームワーク不使用）
 - [Leaflet.js](https://leafletjs.com/) — 地図表示
-- [OpenStreetMap](https://www.openstreetmap.org/) — タイルデータ
+- [OpenStreetMap](https://www.openstreetmap.org/) — タイルデータ・駅データ
+- [Overpass API](https://overpass-api.de/) — 駅座標の取得
+- Python + Shapely — isochrone ポリゴンの事前生成
 
 ## ファイル構成
 
 ```
 door2door-map/
-├── index.html          # メインHTML
-├── style.css           # スタイルシート
-├── script.js           # アプリケーションロジック
+├── index.html              # メインHTML
+├── style.css               # スタイルシート
+├── script.js               # アプリケーションロジック
 ├── data/
-│   └── stations.json   # 駅データ（名前・都市・座標）
+│   ├── stations.json       # ハブ駅データ
+│   └── isochrones/         # 事前計算済み GeoJSON (9駅 × 11ステップ)
+│       ├── shibuya_10.geojson
+│       ├── shibuya_15.geojson
+│       ├── ...
+│       └── namba_60.geojson
+├── scripts/
+│   └── generate_isochrones.py  # GeoJSON 生成スクリプト
 └── README.md
 ```
 
@@ -70,7 +81,7 @@ door2door-map/
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/<your-username>/door2door-map.git
+git clone https://github.com/jim-auto/door2door-map.git
 cd door2door-map
 
 # ローカルサーバーを起動（例: Python）
@@ -81,10 +92,19 @@ python -m http.server 8000
 
 > `file://` プロトコルでは `fetch()` が動作しないため、ローカルサーバーが必要です。
 
+### isochrone データを再生成する場合
+
+```bash
+pip install requests shapely numpy
+python scripts/generate_isochrones.py
+```
+
+> Overpass API のレートリミットがあるため、全駅の生成には数分かかります。
+
 ## 将来の拡張予定
 
-- [ ] 実際の鉄道路線データを使った Isochrone（等時間線）の描画
 - [ ] GTFS データとの連携による正確な所要時間計算
+- [ ] 急行・特急の速度差を反映
 - [ ] 駅の追加（福岡・札幌・京都など）
 - [ ] 複数駅の同時表示・比較機能
 - [ ] 家賃データとの重ね合わせ表示

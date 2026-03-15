@@ -1,34 +1,26 @@
 // ============================================================
 // door2door-map - メインスクリプト
+// 交通経路ベースの到達圏ポリゴンを表示する
 // ============================================================
 
 // --- 定数 ---
-const WALK_SPEED_KMH = 5;   // 徒歩速度 (km/h)
-const TRAIN_SPEED_KMH = 40; // 電車速度 (km/h)
-
-// 円の表示スタイル
-const CIRCLE_STYLES = {
-  walk: {
-    color: "#43a047",
-    fillColor: "#a5d6a7",
-    fillOpacity: 0.25,
-    weight: 2,
-    dashArray: "6, 4",
-  },
-  train: {
-    color: "#1a73e8",
-    fillColor: "#90caf9",
-    fillOpacity: 0.15,
-    weight: 2,
-  },
+const ISOCHRONE_STYLE = {
+  color: "#1a73e8",
+  fillColor: "#42a5f5",
+  fillOpacity: 0.2,
+  weight: 2,
 };
+
+// スライダーの値を GeoJSON ファイル名の時間値にスナップ
+// (生成済み: 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60)
+const SNAP_VALUES = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60];
 
 // --- グローバル変数 ---
 let map;
 let stationMarker = null;
-let walkCircle = null;
-let trainCircle = null;
+let isochroneLayer = null;
 let stations = [];
+let geojsonCache = {};  // キャッシュ: "shibuya_30" → GeoJSON data
 
 // ============================================================
 // 初期化
@@ -44,10 +36,8 @@ document.addEventListener("DOMContentLoaded", async () => {
  * Leaflet 地図を初期化する
  */
 function initMap() {
-  // 日本全体が見える位置で初期化
   map = L.map("map").setView([35.68, 139.76], 6);
 
-  // OpenStreetMap タイルレイヤー
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution:
       '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -69,12 +59,10 @@ async function loadStations() {
 }
 
 /**
- * 駅データからドロップダウンの選択肢を生成する
+ * 駅データからドロップダウンの選択肢を生成する (都市ごとにグループ化)
  */
 function populateDropdown(stations) {
   const select = document.getElementById("station-select");
-
-  // 都市ごとにグループ化して表示
   const cities = [...new Set(stations.map((s) => s.city))];
 
   cities.forEach((city) => {
@@ -83,9 +71,8 @@ function populateDropdown(stations) {
 
     stations
       .filter((s) => s.city === city)
-      .forEach((station, index) => {
+      .forEach((station) => {
         const option = document.createElement("option");
-        // stations 配列内のインデックスを値にする
         option.value = stations.indexOf(station);
         option.textContent = station.name;
         group.appendChild(option);
@@ -104,12 +91,8 @@ function setupEventListeners() {
   const slider = document.getElementById("time-slider");
   const timeValue = document.getElementById("time-value");
 
-  // 駅が選択されたとき
-  select.addEventListener("change", () => {
-    updateMap();
-  });
+  select.addEventListener("change", () => updateMap());
 
-  // スライダーが変更されたとき
   slider.addEventListener("input", () => {
     timeValue.textContent = slider.value;
     updateMap();
@@ -117,78 +100,89 @@ function setupEventListeners() {
 }
 
 // ============================================================
-// 地図更新
+// GeoJSON 読み込み・地図更新
 // ============================================================
+
+/**
+ * スライダー値を最寄りの生成済み時間値にスナップする
+ */
+function snapTime(value) {
+  return SNAP_VALUES.reduce((prev, curr) =>
+    Math.abs(curr - value) < Math.abs(prev - value) ? curr : prev
+  );
+}
+
+/**
+ * isochrone GeoJSON を取得する (キャッシュ付き)
+ */
+async function fetchIsochrone(stationId, timeMin) {
+  const key = `${stationId}_${timeMin}`;
+
+  if (geojsonCache[key]) {
+    return geojsonCache[key];
+  }
+
+  try {
+    const resp = await fetch(`data/isochrones/${key}.geojson`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    geojsonCache[key] = data;
+    return data;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 選択された駅と時間に基づいて地図を更新する
  */
-function updateMap() {
+async function updateMap() {
   const select = document.getElementById("station-select");
   const slider = document.getElementById("time-slider");
 
-  // 駅が未選択の場合はクリア
   if (select.value === "") {
     clearOverlays();
     return;
   }
 
   const station = stations[parseInt(select.value)];
-  const timeMinutes = parseInt(slider.value);
-
-  // 移動可能距離を計算 (km → メートル)
-  const walkDistanceM = calcDistance(WALK_SPEED_KMH, timeMinutes);
-  const trainDistanceM = calcDistance(TRAIN_SPEED_KMH, timeMinutes);
-
+  const timeMinutes = snapTime(parseInt(slider.value));
   const latlng = [station.lat, station.lng];
+
+  // GeoJSON を取得
+  const geojson = await fetchIsochrone(station.id, timeMinutes);
 
   // 既存のオーバーレイをクリア
   clearOverlays();
 
-  // 電車圏（外側の大きな円）
-  trainCircle = L.circle(latlng, {
-    radius: trainDistanceM,
-    ...CIRCLE_STYLES.train,
-  }).addTo(map);
+  if (geojson) {
+    // 到達圏ポリゴンを描画
+    isochroneLayer = L.geoJSON(geojson, {
+      style: () => ISOCHRONE_STYLE,
+    }).addTo(map);
 
-  // 徒歩圏（内側の小さな円）
-  walkCircle = L.circle(latlng, {
-    radius: walkDistanceM,
-    ...CIRCLE_STYLES.walk,
-  }).addTo(map);
+    // ポリゴンの範囲にフィット
+    map.fitBounds(isochroneLayer.getBounds(), { padding: [30, 30] });
+  } else {
+    // GeoJSON がない場合は駅周辺にズーム
+    map.setView(latlng, 12);
+  }
 
   // 駅マーカー
   stationMarker = L.marker(latlng)
     .addTo(map)
-    .bindPopup(createPopupContent(station, timeMinutes, walkDistanceM, trainDistanceM))
+    .bindPopup(createPopupContent(station, timeMinutes))
     .openPopup();
-
-  // 電車圏が収まるようにズーム
-  map.fitBounds(trainCircle.getBounds(), { padding: [30, 30] });
-}
-
-/**
- * 速度と時間から移動距離（メートル）を計算する
- */
-function calcDistance(speedKmh, timeMinutes) {
-  const timeHours = timeMinutes / 60;
-  const distanceKm = speedKmh * timeHours;
-  return distanceKm * 1000; // km → m
 }
 
 /**
  * ポップアップの内容を生成する
  */
-function createPopupContent(station, timeMinutes, walkDistM, trainDistM) {
-  const walkKm = (walkDistM / 1000).toFixed(1);
-  const trainKm = (trainDistM / 1000).toFixed(1);
-
+function createPopupContent(station, timeMinutes) {
   return `
     <div style="font-size: 14px; line-height: 1.6;">
-      <strong>📍 ${station.name}駅</strong>（${station.city}）<br>
-      ⏱ ${timeMinutes} 分<br>
-      <span style="color: #43a047;">🚶 徒歩圏: ${walkKm} km</span><br>
-      <span style="color: #1a73e8;">🚃 電車圏: ${trainKm} km</span>
+      <strong>${station.name}駅</strong>（${station.city}）<br>
+      ${timeMinutes} 分の到達圏
     </div>
   `;
 }
@@ -201,12 +195,8 @@ function clearOverlays() {
     map.removeLayer(stationMarker);
     stationMarker = null;
   }
-  if (walkCircle) {
-    map.removeLayer(walkCircle);
-    walkCircle = null;
-  }
-  if (trainCircle) {
-    map.removeLayer(trainCircle);
-    trainCircle = null;
+  if (isochroneLayer) {
+    map.removeLayer(isochroneLayer);
+    isochroneLayer = null;
   }
 }
