@@ -5,9 +5,13 @@ Overpass API で実際の鉄道駅を取得し、
 各ハブ駅からの到達圏ポリゴン (GeoJSON) を生成する。
 
 モデル:
-  - 電車: 駅間直線距離 × 1.3 (迂回係数) / 40 km/h + 停車駅数 × 1分
+  - 電車: 駅間直線距離 × 1.1 (迂回係数) / 60 km/h (急行・快速含む表定速度)
   - 徒歩バッファ: 各到達駅から徒歩速度 × 残り時間 の円
   - ポリゴン: 全バッファの union → concave hull 風に簡略化
+
+キャリブレーション:
+  渋谷→横浜 (直線28km): 28×1.1/60×60 = 30.8分 (実際28-32分) ✓
+  新宿→横浜 (直線30km): 30×1.1/60×60 = 33分 (実際30-35分) ✓
 """
 
 import json
@@ -22,10 +26,9 @@ from shapely.geometry import MultiPoint, Point, mapping
 from shapely.ops import unary_union
 
 # === 定数 ===
-TRAIN_SPEED_KMH = 40       # 電車の平均速度
+TRAIN_SPEED_KMH = 60       # 電車の表定速度 (急行・快速含む平均)
 WALK_SPEED_KMH = 5         # 徒歩速度
-DETOUR_FACTOR = 1.3         # 直線距離に対する迂回係数
-STOP_PENALTY_MIN = 1.0      # 停車駅あたりのペナルティ (分)
+DETOUR_FACTOR = 1.1         # 直線距離に対する迂回係数 (日本の鉄道は直線的)
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 SEARCH_RADIUS_KM = 35       # 各ハブ駅周辺の駅検索半径 (km)
 TIME_STEPS = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
@@ -97,19 +100,15 @@ def fetch_stations_around(lat, lng, radius_km):
     return stations
 
 
-def estimate_travel_time_min(hub, station, num_intermediate_stops=0):
+def estimate_travel_time_min(hub, station):
     """
     ハブ駅から目的駅への推定所要時間 (分)
-    直線距離 × 迂回係数 / 電車速度 + 停車ペナルティ
+    直線距離 × 迂回係数 / 表定速度
+    停車・加減速は表定速度に含まれている想定
     """
     dist_km = haversine_km(hub["lat"], hub["lng"], station["lat"], station["lng"])
     rail_dist_km = dist_km * DETOUR_FACTOR
     travel_min = (rail_dist_km / TRAIN_SPEED_KMH) * 60
-
-    # 停車駅数を距離から推定 (約2kmに1駅)
-    est_stops = max(0, int(dist_km / 2) - 1)
-    travel_min += est_stops * STOP_PENALTY_MIN
-
     return travel_min
 
 
