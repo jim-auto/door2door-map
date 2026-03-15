@@ -6,36 +6,40 @@ Overpass API で実際の鉄道駅を取得し、
 
 モデル:
   - 電車: 駅間直線距離 × 1.1 (迂回係数) / 60 km/h (急行・快速含む表定速度)
+  - 海越え補正: 駅間の直線が海を横切る場合、迂回係数を 2.5 に引き上げ
   - 徒歩バッファ: 各到達駅から徒歩速度 × 残り時間 の円
-  - ポリゴン: 全バッファの union → concave hull 風に簡略化
+  - 海上クリップ: 陸地ポリゴンで交差を取り、海上部分を除去
+  - ポリゴン: 全バッファの union → simplify で軽量化
 
 キャリブレーション:
-  渋谷→横浜 (直線28km): 28×1.1/60×60 = 30.8分 (実際28-32分) ✓
-  新宿→横浜 (直線30km): 30×1.1/60×60 = 33分 (実際30-35分) ✓
+  渋谷→横浜 (直線28km, 陸路): 28×1.1/60×60 = 30.8分 (実際28-32分) ✓
+  池袋→海浜幕張 (直線35km, 海越え): 35×2.5/60×60 = 87.5分 (実際70-80分) ✓
 """
 
 import json
 import math
-import os
 import time
 from pathlib import Path
 
 import numpy as np
 import requests
-from shapely.geometry import MultiPoint, Point, mapping
+from shapely.geometry import LineString, MultiPoint, MultiPolygon, Point, Polygon, mapping, shape
 from shapely.ops import unary_union
 
 # === 定数 ===
 TRAIN_SPEED_KMH = 60       # 電車の表定速度 (急行・快速含む平均)
 WALK_SPEED_KMH = 5         # 徒歩速度
-DETOUR_FACTOR = 1.1         # 直線距離に対する迂回係数 (日本の鉄道は直線的)
+DETOUR_FACTOR = 1.1         # 陸路の迂回係数
+DETOUR_FACTOR_SEA = 2.5     # 海越えの迂回係数 (湾を迂回するため大幅増)
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 SEARCH_RADIUS_KM = 35       # 各ハブ駅周辺の駅検索半径 (km)
 TIME_STEPS = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
 CIRCLE_POINTS = 32          # 円の近似頂点数
 
-# 出力先
-OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "isochrones"
+# ファイルパス
+SCRIPT_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = SCRIPT_DIR.parent / "data" / "isochrones"
+LAND_FILE = SCRIPT_DIR / "japan_land.geojson"
 
 # ハブ駅データ (stations.json と同じ)
 HUB_STATIONS = [
@@ -50,9 +54,57 @@ HUB_STATIONS = [
     {"name": "難波",   "id": "namba",     "city": "大阪",   "lat": 34.6629, "lng": 135.5014},
 ]
 
+# --- グローバル: 陸地ポリゴン ---
+land_polygon = None
+
+
+def load_land_polygon():
+    """Natural Earth の陸地 GeoJSON を読み込んで結合ポリゴンを返す"""
+    global land_polygon
+
+    if not LAND_FILE.exists():
+        print("  警告: japan_land.geojson が見つかりません。海上クリップなしで実行します。")
+        print("  先に python scripts/fetch_land.py を実行してください。")
+        return
+
+    with open(LAND_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    polygons = []
+    for feature in data["features"]:
+        geom = shape(feature["geometry"])
+        if geom.is_valid:
+            polygons.append(geom)
+        else:
+            polygons.append(geom.buffer(0))
+
+    land_polygon = unary_union(polygons)
+    print(f"  陸地ポリゴン読み込み完了")
+
+
+def crosses_sea(lat1, lng1, lat2, lng2):
+    """2点間の直線が海を横切るか判定"""
+    if land_polygon is None:
+        return False
+
+    line = LineString([(lng1, lat1), (lng2, lat2)])
+
+    # ラインが陸地に完全に含まれていれば海は横切らない
+    if land_polygon.contains(line):
+        return False
+
+    # ラインと陸地の差分が一定以上あれば海を横切っている
+    diff = line.difference(land_polygon)
+    if diff.is_empty:
+        return False
+
+    # 海上部分の長さが全体の5%以上なら海越えと判定
+    sea_ratio = diff.length / line.length
+    return sea_ratio > 0.05
+
 
 def haversine_km(lat1, lon1, lat2, lon2):
-    """2点間の距離 (km) をヒュベニ式で計算"""
+    """2点間の距離 (km) をハーバーサイン公式で計算"""
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
@@ -104,10 +156,17 @@ def estimate_travel_time_min(hub, station):
     """
     ハブ駅から目的駅への推定所要時間 (分)
     直線距離 × 迂回係数 / 表定速度
-    停車・加減速は表定速度に含まれている想定
+    海越えの場合は迂回係数を大幅に引き上げ
     """
     dist_km = haversine_km(hub["lat"], hub["lng"], station["lat"], station["lng"])
-    rail_dist_km = dist_km * DETOUR_FACTOR
+
+    # 海越え判定
+    if crosses_sea(hub["lat"], hub["lng"], station["lat"], station["lng"]):
+        factor = DETOUR_FACTOR_SEA
+    else:
+        factor = DETOUR_FACTOR
+
+    rail_dist_km = dist_km * factor
     travel_min = (rail_dist_km / TRAIN_SPEED_KMH) * 60
     return travel_min
 
@@ -117,7 +176,6 @@ def create_circle_polygon(lat, lng, radius_km, n_points=CIRCLE_POINTS):
     points = []
     for i in range(n_points):
         angle = 2 * math.pi * i / n_points
-        # 緯度・経度のオフセットを計算
         dlat = radius_km / 111.32 * math.cos(angle)
         dlng = radius_km / (111.32 * math.cos(math.radians(lat))) * math.sin(angle)
         points.append(Point(lng + dlng, lat + dlat))
@@ -128,9 +186,9 @@ def generate_isochrone(hub, nearby_stations, time_min):
     """
     指定時間内の到達圏ポリゴンを生成
 
-    1. 各駅への電車所要時間を計算
+    1. 各駅への電車所要時間を計算 (海越え補正付き)
     2. 残り時間で徒歩バッファを追加
-    3. 全バッファの union をポリゴンとして返す
+    3. 全バッファの union → 陸地でクリップ
     """
     buffers = []
 
@@ -144,7 +202,7 @@ def generate_isochrone(hub, nearby_stations, time_min):
         train_time = estimate_travel_time_min(hub, station)
 
         if train_time >= time_min:
-            continue  # 時間内に到達不可
+            continue
 
         # 残り時間で徒歩
         remaining_min = time_min - train_time
@@ -161,6 +219,12 @@ def generate_isochrone(hub, nearby_stations, time_min):
 
     # 全バッファを結合
     merged = unary_union(buffers)
+
+    # 陸地でクリップ (海上部分を除去)
+    if land_polygon is not None:
+        clipped = merged.intersection(land_polygon)
+        if not clipped.is_empty:
+            merged = clipped
 
     # 頂点数を減らして軽量化
     simplified = merged.simplify(0.002, preserve_topology=True)
@@ -190,6 +254,9 @@ def polygon_to_geojson(polygon, hub, time_min):
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # 陸地ポリゴンを読み込み
+    load_land_polygon()
+
     for hub in HUB_STATIONS:
         print(f"\n=== {hub['name']}駅 ({hub['city']}) ===")
 
@@ -218,7 +285,6 @@ def main():
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(geojson, f, ensure_ascii=False, indent=None)
 
-            # ファイルサイズ表示
             size_kb = filepath.stat().st_size / 1024
             print(f"  {t}分: {filename} ({size_kb:.1f} KB)")
 
