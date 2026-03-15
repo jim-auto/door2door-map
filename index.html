@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>door2door-map - 通勤圏可視化マップ</title>
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ヘッダー -->
+  <header>
+    <h1>🚃 door2door-map</h1>
+    <p class="subtitle">主要駅からの到達可能範囲を可視化</p>
+  </header>
+
+  <!-- コントロールパネル -->
+  <div id="controls">
+    <div class="control-group">
+      <label for="station-select">駅を選択</label>
+      <select id="station-select">
+        <option value="">-- 駅を選んでください --</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label for="time-slider">
+        移動時間: <span id="time-value">30</span> 分
+      </label>
+      <input
+        type="range"
+        id="time-slider"
+        min="10"
+        max="60"
+        value="30"
+        step="5"
+      />
+      <div class="slider-labels">
+        <span>10分</span>
+        <span>60分</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 地図 -->
+  <div id="map"></div>
+
+  <!-- 注意書き -->
+  <footer id="disclaimer">
+    <p>
+      ⚠ このマップは簡易的な通勤時間モデルを使用しています。<br>
+      実際の鉄道ダイヤ・乗換時間・待ち時間は考慮していません。<br>
+      電車速度と徒歩速度の平均値を用いた概算の可視化です。
+    </p>
+  </footer>
+
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script src="script.js"></script>
+</body>
+</html>
