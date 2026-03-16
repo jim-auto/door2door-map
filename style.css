@@ -267,6 +267,39 @@ header .subtitle {
   background: #b71c1c;
 }
 
+/* === 面積統計 === */
+.info-divider {
+  border-top: 1px solid #e0e0e0;
+  margin: 6px 0;
+}
+
+.info-area-stats {
+  font-size: 0.78rem;
+  color: #555;
+}
+
+.info-area-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.info-dot-overlap {
+  background: #9c27b0;
+}
+
+.info-overlap-pct {
+  margin-top: 4px;
+  font-size: 0.85rem;
+  color: #333;
+}
+
+.info-overlap-pct strong {
+  color: #6a1b9a;
+  font-size: 1rem;
+}
+
 /* カスタムマーカー */
 .custom-marker {
   background: none;

@@ -173,12 +173,40 @@ function createInfoPanel() {
   infoPanel.addTo(map);
 }
 
-function updateInfoPanel(stationA, stationB, selectedTime) {
+/**
+ * 駅情報パネルを更新する
+ * areaStats: { areaA, areaB, areaOverlap, overlapPctA, overlapPctB } (比較モード時)
+ */
+function updateInfoPanel(stationA, stationB, selectedTime, areaStats) {
   if (!infoPanel) return;
   const container = infoPanel.getContainer();
 
   if (stationA && stationB) {
-    // 比較モード
+    // 比較モード: 面積と重複率を表示
+    let statsHtml = "";
+    if (areaStats) {
+      statsHtml = `
+        <div class="info-divider"></div>
+        <div class="info-area-stats">
+          <div class="info-area-row">
+            <span class="info-dot info-dot-a"></span>
+            ${areaStats.areaA.toFixed(0)} km²
+          </div>
+          <div class="info-area-row">
+            <span class="info-dot info-dot-b"></span>
+            ${areaStats.areaB.toFixed(0)} km²
+          </div>
+          <div class="info-area-row">
+            <span class="info-dot info-dot-overlap"></span>
+            ${areaStats.areaOverlap.toFixed(0)} km²
+          </div>
+          <div class="info-overlap-pct">
+            重複率: <strong>${areaStats.overlapPct.toFixed(0)}%</strong>
+          </div>
+        </div>
+      `;
+    }
+
     container.innerHTML = `
       <div class="info-header">駅比較</div>
       <div class="info-body">
@@ -195,6 +223,7 @@ function updateInfoPanel(stationA, stationB, selectedTime) {
         <div class="info-time">
           選択中: <strong>${selectedTime}分</strong>圏
         </div>
+        ${statsHtml}
       </div>
     `;
   } else if (stationA) {
@@ -321,16 +350,18 @@ async function updateMap() {
 
   clearOverlays();
 
+  let areaStats = null;
+
   if (stationB) {
-    // === 比較モード: 選択時間のみ表示 ===
-    await drawComparisonMode(stationA, stationB, selectedTime);
+    // === 比較モード: 選択時間のみ表示、面積統計を取得 ===
+    areaStats = await drawComparisonMode(stationA, stationB, selectedTime);
   } else {
     // === 単独モード: 全時間帯グラデーション ===
     await drawSingleMode(stationA, selectedTime);
   }
 
   updateLegend(stationA, stationB, selectedTime);
-  updateInfoPanel(stationA, stationB, selectedTime);
+  updateInfoPanel(stationA, stationB, selectedTime, areaStats);
 }
 
 /**
@@ -369,26 +400,30 @@ async function drawComparisonMode(stationA, stationB, selectedTime) {
 
   if (!geojsonA && !geojsonB) {
     map.setView([stationA.lat, stationA.lng], 11);
-    return;
+    return null;
   }
 
   const allBounds = L.latLngBounds([]);
+  let areaStats = null;
 
-  // Turf.js で集合演算
+  // Turf.js で集合演算 + 面積計算
   if (geojsonA && geojsonB) {
     try {
-      // GeoJSON の Feature を取得
       const featA = combineFeaturesForTurf(geojsonA);
       const featB = combineFeaturesForTurf(geojsonB);
 
-      // 交差（両方から到達可能なエリア）
       const intersection = safeIntersect(featA, featB);
-
-      // A のみ（A - B）
       const aOnly = safeDifference(featA, featB);
-
-      // B のみ（B - A）
       const bOnly = safeDifference(featB, featA);
+
+      // 面積計算 (km²)
+      const areaA = turf.area(featA) / 1e6;
+      const areaB = turf.area(featB) / 1e6;
+      const areaOverlap = intersection ? turf.area(intersection) / 1e6 : 0;
+      const areaUnion = areaA + areaB - areaOverlap;
+      const overlapPct = areaUnion > 0 ? (areaOverlap / areaUnion) * 100 : 0;
+
+      areaStats = { areaA, areaB, areaOverlap, overlapPct };
 
       // A のみ → 青
       if (aOnly) {
@@ -433,11 +468,9 @@ async function drawComparisonMode(stationA, stationB, selectedTime) {
       }
     } catch (e) {
       console.warn("Turf.js 演算エラー、フォールバック表示:", e);
-      // フォールバック: 単純な重ね合わせ
       drawFallbackComparison(geojsonA, geojsonB, allBounds);
     }
   } else {
-    // 片方だけある場合
     const geojson = geojsonA || geojsonB;
     const color = geojsonA ? "#1565c0" : "#c62828";
     const layer = L.geoJSON(geojson, {
@@ -472,6 +505,8 @@ async function drawComparisonMode(stationA, stationB, selectedTime) {
     .addTo(map)
     .bindPopup(createPopupContent(stationB, selectedTime, "B"));
   markers.push(markerB);
+
+  return areaStats;
 }
 
 /**
