@@ -24,7 +24,7 @@ from shapely.geometry import LineString, MultiPoint, Point, mapping, shape
 from shapely.ops import unary_union
 
 # === 定数 ===
-TRAIN_SPEED_KMH = 40        # 電車の表定速度 (停車・待ち・乗換含む実効速度)
+TRAIN_SPEED_KMH = 50        # 電車の表定速度 (テスト29区間で平均誤差5.2分)
 WALK_SPEED_KMH = 5          # 徒歩速度
 STATION_SNAP_DIST_M = 500   # 駅を路線にスナップする最大距離 (m)
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
