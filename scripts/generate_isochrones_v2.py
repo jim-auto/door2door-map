@@ -24,7 +24,7 @@ from shapely.geometry import LineString, MultiPoint, Point, mapping, shape
 from shapely.ops import unary_union
 
 # === 定数 ===
-TRAIN_SPEED_KMH = 60        # 電車の表定速度
+TRAIN_SPEED_KMH = 40        # 電車の表定速度 (停車・待ち・乗換含む実効速度)
 WALK_SPEED_KMH = 5          # 徒歩速度
 STATION_SNAP_DIST_M = 500   # 駅を路線にスナップする最大距離 (m)
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
@@ -216,86 +216,92 @@ def parse_rail_data(data):
 
 def build_rail_graph(stations, ways, node_coords):
     """
-    駅を路線にスナップし、同一路線上の隣接駅間を
-    路線に沿った実距離で接続するグラフを構築する。
+    OSM のノードレベルで詳細な鉄道ネットワークグラフを構築し、
+    駅を最寄りのネットワークノードに接続する。
+
+    OSM の way は短い断片に分割されているため、way 単位ではなく
+    ノード単位でグラフを構築する必要がある。
 
     Returns:
-        graph: {station_id: [(neighbor_id, distance_km), ...]}
+        graph: {node_id: [(neighbor_id, distance_km), ...]}
     """
-    # 駅の位置を高速検索用に準備
-    station_points = {}
-    for s in stations:
-        station_points[s["id"]] = (s["lat"], s["lng"])
-
-    # 各wayについて、そのway上 (またはway近傍) にある駅を特定
     graph = defaultdict(list)
-    total_edges = 0
+    rail_edge_count = 0
+
+    # Step 1: 全 way の隣接ノード間をエッジで接続
+    # これにより way の断片が自動的に結合される
+    # (隣接 way は端点ノードを共有している)
+    rail_nodes = set()
 
     for way in ways:
-        # wayのLineStringを作成
-        way_line = LineString([(c[1], c[0]) for c in way["coords"]])  # (lng, lat) 形式
-
-        # このway近傍の駅を見つけ、way上での位置(fraction)を計算
-        way_stations = []
-        for s in stations:
-            p = Point(s["lng"], s["lat"])
-            dist_deg = way_line.distance(p)
-            # おおよそ500m以内 (緯度1度≈111km, 0.005度≈550m)
-            if dist_deg < 0.005:
-                fraction = way_line.project(p, normalized=True)
-                way_stations.append((fraction, s))
-
-        if len(way_stations) < 2:
-            continue
-
-        # fraction順にソート
-        way_stations.sort(key=lambda x: x[0])
-
-        # 隣接駅間の実距離を計算
-        for i in range(len(way_stations) - 1):
-            frac_a, sta_a = way_stations[i]
-            frac_b, sta_b = way_stations[i + 1]
-
-            if sta_a["id"] == sta_b["id"]:
+        node_ids = way["node_ids"]
+        for i in range(len(node_ids) - 1):
+            n1 = node_ids[i]
+            n2 = node_ids[i + 1]
+            if n1 not in node_coords or n2 not in node_coords:
                 continue
 
-            # way の coords からこの区間の距離を計算
-            segment_dist = calc_segment_distance(way["coords"], frac_a, frac_b)
+            c1 = node_coords[n1]
+            c2 = node_coords[n2]
+            d = haversine_km(c1[0], c1[1], c2[0], c2[1])
 
-            if segment_dist < 0.1:  # 100m未満は無視
+            if d > 5.0:  # 5km超のセグメントは異常値
                 continue
-            if segment_dist > 30:   # 30km超は異常値として無視
+
+            graph[n1].append((n2, d))
+            graph[n2].append((n1, d))
+            rail_nodes.add(n1)
+            rail_nodes.add(n2)
+            rail_edge_count += 1
+
+    print(f"  鉄道ネットワーク: {len(rail_nodes)} ノード, {rail_edge_count} エッジ")
+
+    # Step 2: 各駅を最寄りの鉄道ネットワークノードに接続
+    # 高速化: 鉄道ノードをリスト化して numpy で最寄り検索
+    rail_node_list = list(rail_nodes)
+    rail_node_lats = [node_coords[n][0] for n in rail_node_list]
+    rail_node_lngs = [node_coords[n][1] for n in rail_node_list]
+
+    connected_stations = 0
+
+    for s in stations:
+        best_node = None
+        best_dist = float("inf")
+
+        # 緯度経度で1km程度 (0.01度) の範囲で粗いフィルタ
+        for idx, rn in enumerate(rail_node_list):
+            if abs(rail_node_lats[idx] - s["lat"]) > 0.01:
                 continue
+            if abs(rail_node_lngs[idx] - s["lng"]) > 0.013:
+                continue
+            d = haversine_km(s["lat"], s["lng"],
+                             rail_node_lats[idx], rail_node_lngs[idx])
+            if d < best_dist:
+                best_dist = d
+                best_node = rn
 
-            # 双方向エッジ
-            graph[sta_a["id"]].append((sta_b["id"], segment_dist))
-            graph[sta_b["id"]].append((sta_a["id"], segment_dist))
-            total_edges += 1
+        if best_node is not None and best_dist < 1.0:  # 1km以内
+            graph[s["id"]].append((best_node, best_dist))
+            graph[best_node].append((s["id"], best_dist))
+            connected_stations += 1
 
-    # 乗換: 同じ名前 or 200m以内の駅を接続 (乗換時間 = 徒歩3分相当)
-    transfer_dist_km = WALK_SPEED_KMH * 3 / 60  # 3分の徒歩距離
+    print(f"  接続済み駅: {connected_stations} / {len(stations)}")
+
+    # Step 3: 乗換接続 (同名 or 200m以内の駅)
+    transfer_edges = 0
+    transfer_dist_km = WALK_SPEED_KMH * 3 / 60  # 3分の徒歩 = 0.25km
     for i, s1 in enumerate(stations):
         for j, s2 in enumerate(stations):
             if i >= j:
                 continue
             d = haversine_km(s1["lat"], s1["lng"], s2["lat"], s2["lng"])
-            # 同名 or 200m以内 → 乗換接続
             if s1["name"] == s2["name"] or d < 0.2:
                 graph[s1["id"]].append((s2["id"], transfer_dist_km))
                 graph[s2["id"]].append((s1["id"], transfer_dist_km))
-                total_edges += 1
+                transfer_edges += 1
 
-    print(f"  グラフ: {len(graph)} ノード, {total_edges} エッジ")
+    print(f"  乗換エッジ: {transfer_edges}")
     return graph
-
-
-def calc_segment_distance(coords, frac_a, frac_b):
-    """
-    way の coords 上で fraction_a ～ fraction_b 区間の距離を計算。
-    簡易的に全体距離 × (frac_b - frac_a) で近似。
-    """
-    total = polyline_distance_km(coords)
-    return total * (frac_b - frac_a)
 
 
 # ============================================================
