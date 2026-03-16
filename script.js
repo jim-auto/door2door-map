@@ -358,7 +358,8 @@ async function drawSingleMode(station, selectedTime) {
 }
 
 /**
- * 比較モード: 選択した時間の到達圏を A だけ / B だけ / 両方 で色分け
+ * 比較モード: Turf.js でポリゴンの差分・交差を計算し、
+ * A だけ（青）/ B だけ（赤）/ 両方（紫）を明確に塗り分ける
  */
 async function drawComparisonMode(stationA, stationB, selectedTime) {
   const [geojsonA, geojsonB] = await Promise.all([
@@ -366,34 +367,89 @@ async function drawComparisonMode(stationA, stationB, selectedTime) {
     fetchIsochrone(stationB.id, selectedTime),
   ]);
 
-  const allBounds = L.latLngBounds([]);
-
-  // 駅Aの到達圏（青）
-  if (geojsonA) {
-    const layerA = L.geoJSON(geojsonA, {
-      style: () => ({
-        color: "#1565c0",
-        fillColor: "#1565c0",
-        fillOpacity: 0.35,
-        weight: 2,
-      }),
-    }).addTo(map);
-    isochroneLayers.push(layerA);
-    allBounds.extend(layerA.getBounds());
+  if (!geojsonA && !geojsonB) {
+    map.setView([stationA.lat, stationA.lng], 11);
+    return;
   }
 
-  // 駅Bの到達圏（赤）
-  if (geojsonB) {
-    const layerB = L.geoJSON(geojsonB, {
+  const allBounds = L.latLngBounds([]);
+
+  // Turf.js で集合演算
+  if (geojsonA && geojsonB) {
+    try {
+      // GeoJSON の Feature を取得
+      const featA = combineFeaturesForTurf(geojsonA);
+      const featB = combineFeaturesForTurf(geojsonB);
+
+      // 交差（両方から到達可能なエリア）
+      const intersection = safeIntersect(featA, featB);
+
+      // A のみ（A - B）
+      const aOnly = safeDifference(featA, featB);
+
+      // B のみ（B - A）
+      const bOnly = safeDifference(featB, featA);
+
+      // A のみ → 青
+      if (aOnly) {
+        const layer = L.geoJSON(aOnly, {
+          style: () => ({
+            color: "#1565c0",
+            fillColor: "#1565c0",
+            fillOpacity: 0.45,
+            weight: 1.5,
+          }),
+        }).addTo(map);
+        isochroneLayers.push(layer);
+        allBounds.extend(layer.getBounds());
+      }
+
+      // B のみ → 赤
+      if (bOnly) {
+        const layer = L.geoJSON(bOnly, {
+          style: () => ({
+            color: "#c62828",
+            fillColor: "#c62828",
+            fillOpacity: 0.45,
+            weight: 1.5,
+          }),
+        }).addTo(map);
+        isochroneLayers.push(layer);
+        allBounds.extend(layer.getBounds());
+      }
+
+      // 両方 → 紫
+      if (intersection) {
+        const layer = L.geoJSON(intersection, {
+          style: () => ({
+            color: "#6a1b9a",
+            fillColor: "#9c27b0",
+            fillOpacity: 0.45,
+            weight: 1.5,
+          }),
+        }).addTo(map);
+        isochroneLayers.push(layer);
+        allBounds.extend(layer.getBounds());
+      }
+    } catch (e) {
+      console.warn("Turf.js 演算エラー、フォールバック表示:", e);
+      // フォールバック: 単純な重ね合わせ
+      drawFallbackComparison(geojsonA, geojsonB, allBounds);
+    }
+  } else {
+    // 片方だけある場合
+    const geojson = geojsonA || geojsonB;
+    const color = geojsonA ? "#1565c0" : "#c62828";
+    const layer = L.geoJSON(geojson, {
       style: () => ({
-        color: "#c62828",
-        fillColor: "#c62828",
-        fillOpacity: 0.35,
+        color: color,
+        fillColor: color,
+        fillOpacity: 0.4,
         weight: 2,
       }),
     }).addTo(map);
-    isochroneLayers.push(layerB);
-    allBounds.extend(layerB.getBounds());
+    isochroneLayers.push(layer);
+    allBounds.extend(layer.getBounds());
   }
 
   // ズーム
@@ -416,6 +472,76 @@ async function drawComparisonMode(stationA, stationB, selectedTime) {
     .addTo(map)
     .bindPopup(createPopupContent(stationB, selectedTime, "B"));
   markers.push(markerB);
+}
+
+/**
+ * GeoJSON FeatureCollection の全 Feature を1つの MultiPolygon に結合する
+ */
+function combineFeaturesForTurf(geojson) {
+  const features = geojson.features || [geojson];
+  if (features.length === 1) return features[0];
+
+  // 複数 Feature → union で1つに結合
+  let combined = features[0];
+  for (let i = 1; i < features.length; i++) {
+    try {
+      const result = turf.union(
+        turf.featureCollection([combined, features[i]])
+      );
+      if (result) combined = result;
+    } catch {
+      // union 失敗時はスキップ
+    }
+  }
+  return combined;
+}
+
+/**
+ * 安全な intersection（エラー時は null）
+ */
+function safeIntersect(featA, featB) {
+  try {
+    return turf.intersect(turf.featureCollection([featA, featB]));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 安全な difference（エラー時は null）
+ */
+function safeDifference(featA, featB) {
+  try {
+    return turf.difference(turf.featureCollection([featA, featB]));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * フォールバック: Turf.js が使えない場合の単純重ね合わせ
+ */
+function drawFallbackComparison(geojsonA, geojsonB, allBounds) {
+  if (geojsonA) {
+    const layer = L.geoJSON(geojsonA, {
+      style: () => ({
+        color: "#1565c0", fillColor: "#1565c0",
+        fillOpacity: 0.35, weight: 2,
+      }),
+    }).addTo(map);
+    isochroneLayers.push(layer);
+    allBounds.extend(layer.getBounds());
+  }
+  if (geojsonB) {
+    const layer = L.geoJSON(geojsonB, {
+      style: () => ({
+        color: "#c62828", fillColor: "#c62828",
+        fillOpacity: 0.35, weight: 2,
+      }),
+    }).addTo(map);
+    isochroneLayers.push(layer);
+    allBounds.extend(layer.getBounds());
+  }
 }
 
 /**
