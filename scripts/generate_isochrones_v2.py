@@ -47,6 +47,7 @@ HUB_STATIONS = [
     {"name": "横浜",   "id": "yokohama",  "city": "神奈川", "lat": 35.4657, "lng": 139.6225},
     {"name": "名古屋", "id": "nagoya",    "city": "名古屋", "lat": 35.1709, "lng": 136.8815},
     {"name": "栄",     "id": "sakae",     "city": "名古屋", "lat": 35.1706, "lng": 136.9086},
+    {"name": "金山",   "id": "kanayama",  "city": "名古屋", "lat": 35.1425, "lng": 136.9005},
     {"name": "梅田",   "id": "umeda",     "city": "大阪",   "lat": 34.7024, "lng": 135.4959},
     {"name": "難波",   "id": "namba",     "city": "大阪",   "lat": 34.6629, "lng": 135.5014},
 ]
