@@ -40,6 +40,8 @@ header .subtitle {
   background: #fff;
   border-bottom: 1px solid #ddd;
   align-items: flex-end;
+  position: relative;
+  z-index: 1000;
 }
 
 .control-group {
@@ -63,6 +65,8 @@ header .subtitle {
   border-radius: 6px;
   min-width: 200px;
   cursor: pointer;
+  position: relative;
+  z-index: 1001;
 }
 
 #station-select-b {
