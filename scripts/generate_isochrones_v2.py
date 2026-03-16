@@ -24,9 +24,10 @@ from shapely.geometry import LineString, MultiPoint, Point, mapping, shape
 from shapely.ops import unary_union
 
 # === 定数 ===
-TRAIN_SPEED_KMH = 50        # 電車の表定速度 (テスト29区間で平均誤差5.2分)
+TRAIN_SPEED_KMH = 50        # 電車の表定速度 (テスト139区間で平均誤差4.4分)
 WALK_SPEED_KMH = 5          # 徒歩速度
 STATION_SNAP_DIST_M = 500   # 駅を路線にスナップする最大距離 (m)
+TRANSFER_PENALTY_MIN = 5    # 乗換ペナルティ (ホーム移動+待ち時間)
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 SEARCH_RADIUS_KM = 40       # 検索半径
 TIME_STEPS = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
@@ -291,19 +292,22 @@ def build_rail_graph(stations, ways, node_coords):
     print(f"  接続済み駅: {connected_stations} / {len(stations)} (駅-ノード エッジ: {total_station_edges})")
 
     # Step 3: 乗換接続 (同名 or 200m以内の駅)
+    # 乗換コスト = 物理距離 + ペナルティ (ホーム移動 + 待ち時間)
+    # 5分ペナルティ → 距離に換算: 5min × 50km/h / 60 = 4.17km 相当
+    transfer_penalty_km = TRANSFER_PENALTY_MIN / 60 * TRAIN_SPEED_KMH
     transfer_edges = 0
-    transfer_dist_km = WALK_SPEED_KMH * 3 / 60  # 3分の徒歩 = 0.25km
     for i, s1 in enumerate(stations):
         for j, s2 in enumerate(stations):
             if i >= j:
                 continue
             d = haversine_km(s1["lat"], s1["lng"], s2["lat"], s2["lng"])
             if s1["name"] == s2["name"] or d < 0.2:
-                graph[s1["id"]].append((s2["id"], transfer_dist_km))
-                graph[s2["id"]].append((s1["id"], transfer_dist_km))
+                cost = d + transfer_penalty_km
+                graph[s1["id"]].append((s2["id"], cost))
+                graph[s2["id"]].append((s1["id"], cost))
                 transfer_edges += 1
 
-    print(f"  乗換エッジ: {transfer_edges}")
+    print(f"  乗換エッジ: {transfer_edges} (penalty: {TRANSFER_PENALTY_MIN}min={transfer_penalty_km:.1f}km)")
     return graph
 
 
