@@ -256,36 +256,39 @@ def build_rail_graph(stations, ways, node_coords):
 
     print(f"  鉄道ネットワーク: {len(rail_nodes)} ノード, {rail_edge_count} エッジ")
 
-    # Step 2: 各駅を最寄りの鉄道ネットワークノードに接続
-    # 高速化: 鉄道ノードをリスト化して numpy で最寄り検索
+    # Step 2: 各駅を近傍の全鉄道ネットワークノードに接続
+    # 複数路線（JR・地下鉄等）が交差する駅では、全ネットワークに接続する必要がある
+    STATION_CONNECT_RADIUS_KM = 0.5  # 500m以内の全ノードに接続
+
     rail_node_list = list(rail_nodes)
     rail_node_lats = [node_coords[n][0] for n in rail_node_list]
     rail_node_lngs = [node_coords[n][1] for n in rail_node_list]
 
     connected_stations = 0
+    total_station_edges = 0
 
     for s in stations:
-        best_node = None
-        best_dist = float("inf")
+        nearby_nodes = []
 
-        # 緯度経度で1km程度 (0.01度) の範囲で粗いフィルタ
+        # 緯度経度で粗いフィルタ後、500m 以内の全ノードを収集
         for idx, rn in enumerate(rail_node_list):
-            if abs(rail_node_lats[idx] - s["lat"]) > 0.01:
+            if abs(rail_node_lats[idx] - s["lat"]) > 0.006:
                 continue
-            if abs(rail_node_lngs[idx] - s["lng"]) > 0.013:
+            if abs(rail_node_lngs[idx] - s["lng"]) > 0.008:
                 continue
             d = haversine_km(s["lat"], s["lng"],
                              rail_node_lats[idx], rail_node_lngs[idx])
-            if d < best_dist:
-                best_dist = d
-                best_node = rn
+            if d <= STATION_CONNECT_RADIUS_KM:
+                nearby_nodes.append((rn, d))
 
-        if best_node is not None and best_dist < 1.0:  # 1km以内
-            graph[s["id"]].append((best_node, best_dist))
-            graph[best_node].append((s["id"], best_dist))
+        if nearby_nodes:
+            for rn, d in nearby_nodes:
+                graph[s["id"]].append((rn, d))
+                graph[rn].append((s["id"], d))
+                total_station_edges += 1
             connected_stations += 1
 
-    print(f"  接続済み駅: {connected_stations} / {len(stations)}")
+    print(f"  接続済み駅: {connected_stations} / {len(stations)} (駅-ノード エッジ: {total_station_edges})")
 
     # Step 3: 乗換接続 (同名 or 200m以内の駅)
     transfer_edges = 0
