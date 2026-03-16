@@ -11,7 +11,7 @@ https://jim-auto.github.io/door2door-map/
 
 通勤や引っ越しの検討時に「この駅から30分で、どのくらいの範囲に行けるのか？」をざっくり把握するためのツールです。
 
-OpenStreetMap の実在する鉄道駅データを使い、交通経路ベースの到達圏ポリゴンを事前計算して表示します。
+OpenStreetMap の実際の鉄道路線ネットワーク（線路形状）を使い、ダイクストラ法で到達圏を算出。事前計算した GeoJSON ポリゴンを時間帯別グラデーションで表示します。
 
 ### 対応駅
 
@@ -26,77 +26,89 @@ OpenStreetMap の実在する鉄道駅データを使い、交通経路ベース
 
 1. ドロップダウンから駅を選択
 2. スライダーで移動時間（10〜60分）を設定
-3. 地図上に到達可能範囲がポリゴンで表示されます
+3. 地図上に到達可能範囲がグラデーション表示されます
+   - **濃い青**: 短時間で到達可能（10分圏）
+   - **薄い青**: 長い時間が必要（60分圏）
+4. 左上の情報パネルに駅情報、右下に凡例が表示されます
 
 ## モデルについて
 
-このアプリは、実在する駅の位置データと簡易的な移動モデルを組み合わせて到達圏を算出しています。
-
 ### 計算方法
 
-1. **Overpass API** で各ハブ駅の周辺 35km 以内の鉄道駅を取得
-2. 各駅への所要時間を推定:
-   - 直線距離 × 迂回係数 (1.3) / 電車速度 (40 km/h)
-   - 停車駅ペナルティ: 約 2km ごとに 1 駅、1 駅あたり +1 分
-3. 残り時間で徒歩圏 (5 km/h) をバッファとして追加
-4. 全バッファを結合してポリゴン化
+1. **Overpass API** で各地域の鉄道路線ジオメトリと駅を一括取得
+   - 東京圏: 1,371駅, 19,410路線way, 130,289ノード
+   - 名古屋圏: 579駅, 8,447路線way
+   - 大阪圏: 907駅, 13,489路線way
+2. OSM ノードレベルで鉄道ネットワークグラフを構築
+   - 路線に沿った実距離（ハーバーサイン公式）でエッジ重み付け
+   - 同名 or 200m以内の駅を乗換接続
+3. **ダイクストラ法**でハブ駅から全駅への最短路線距離を計算
+4. 路線距離 / 表定速度 (50 km/h) で所要時間を推定
+5. 残り時間で徒歩バッファ (5 km/h) を追加
+6. 全バッファを結合 → 陸地でクリップ → ポリゴン化
+
+### 精度
+
+38区間の実時刻表データ（[トラベルタウンズ](https://www.traveltowns.jp/)）で検証:
+
+| 評価 | 件数 | 割合 |
+|------|------|------|
+| OK (誤差 ±5分以内) | 28 | 74% |
+| ~ (誤差 ±10分以内) | 7 | 18% |
+| NG (誤差 10分超) | 3 | 8% |
+| **平均誤差** | **4.0分** | |
 
 ### 考慮していない要素
 
 - 実際の鉄道ダイヤ・運行頻度
-- 乗換時間・待ち時間
-- 急行・特急の速度差
-- 道路・地形による迂回
+- 乗換待ち時間
+- 急行・特急の速度差（表定速度で近似）
+- 道路・地形による徒歩の迂回
 
 あくまで「概算でどの程度の範囲か」を把握するためのツールです。
 
 ## 技術スタック
 
 - HTML / CSS / JavaScript（フレームワーク不使用）
-- [Leaflet.js](https://leafletjs.com/) — 地図表示
-- [OpenStreetMap](https://www.openstreetmap.org/) — タイルデータ・駅データ
-- [Overpass API](https://overpass-api.de/) — 駅座標の取得
-- Python + Shapely — isochrone ポリゴンの事前生成
+- [Leaflet.js](https://leafletjs.com/) — 地図表示・凡例・情報パネル
+- [OpenStreetMap](https://www.openstreetmap.org/) — タイルデータ・鉄道路線データ
+- [Overpass API](https://overpass-api.de/) — 鉄道ネットワーク取得
+- Python + Shapely — ダイクストラ法 + isochrone ポリゴン事前生成
 
 ## ファイル構成
 
 ```
 door2door-map/
-├── index.html              # メインHTML
-├── style.css               # スタイルシート
-├── script.js               # アプリケーションロジック
+├── index.html                        # メインHTML
+├── style.css                         # スタイルシート（凡例・情報パネル含む）
+├── script.js                         # 時間帯別グラデーション描画
 ├── data/
-│   ├── stations.json       # ハブ駅データ
-│   └── isochrones/         # 事前計算済み GeoJSON (9駅 × 11ステップ)
-│       ├── shibuya_10.geojson
-│       ├── shibuya_15.geojson
-│       ├── ...
-│       └── namba_60.geojson
+│   ├── stations.json                 # ハブ駅データ
+│   └── isochrones/                   # 事前計算済み GeoJSON (9駅 × 11ステップ)
 ├── scripts/
-│   └── generate_isochrones.py  # GeoJSON 生成スクリプト
+│   ├── generate_isochrones_v2.py     # ダイクストラ法による GeoJSON 生成
+│   ├── generate_isochrones.py        # v1 (簡易モデル, 参考用)
+│   ├── fetch_land.py                 # 陸地ポリゴン取得
+│   └── test_calibration.py           # 38区間のキャリブレーションテスト
 └── README.md
 ```
 
 ## ローカルで動かす
 
 ```bash
-# リポジトリをクローン
 git clone https://github.com/jim-auto/door2door-map.git
 cd door2door-map
-
-# ローカルサーバーを起動（例: Python）
 python -m http.server 8000
-
 # ブラウザで http://localhost:8000 を開く
 ```
-
-> `file://` プロトコルでは `fetch()` が動作しないため、ローカルサーバーが必要です。
 
 ### isochrone データを再生成する場合
 
 ```bash
 pip install requests shapely numpy
-python scripts/generate_isochrones.py
+python scripts/fetch_land.py               # 陸地データ取得（初回のみ）
+python scripts/generate_isochrones_v2.py   # GeoJSON 生成
+python scripts/test_calibration.py         # キャリブレーション検証
 ```
 
 > Overpass API のレートリミットがあるため、全駅の生成には数分かかります。
@@ -108,7 +120,6 @@ python scripts/generate_isochrones.py
 - [ ] 駅の追加（福岡・札幌・京都など）
 - [ ] 複数駅の同時表示・比較機能
 - [ ] 家賃データとの重ね合わせ表示
-- [ ] モバイル UI の最適化
 
 ## ライセンス
 
