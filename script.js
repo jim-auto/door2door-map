@@ -115,31 +115,30 @@ function createLegend() {
 /**
  * 凡例の内容を動的に更新する
  */
-function updateLegend(stationA, stationB) {
+function updateLegend(stationA, stationB, selectedTime) {
   const div = document.getElementById("legend-content");
   if (!div) return;
 
-  const displaySteps = [10, 20, 30, 40, 50, 60];
   let html = "";
 
   if (stationA && stationB) {
-    // 比較モード: 2列で表示
-    html += `<div class="legend-title">${stationA.name} vs ${stationB.name}</div>`;
-    html += '<div class="legend-compare-header">';
-    html += `<span class="legend-label-a">${stationA.name}</span>`;
-    html += '<span class="legend-label-time">時間</span>';
-    html += `<span class="legend-label-b">${stationB.name}</span>`;
+    // 比較モード: シンプルに3色の説明
+    html += `<div class="legend-title">${selectedTime}分圏の比較</div>`;
+    html += '<div class="legend-item">';
+    html += '<span class="legend-color" style="background:#1565c0;opacity:0.8"></span>';
+    html += `<span class="legend-label">${stationA.name}のみ到達</span>`;
     html += '</div>';
-
-    displaySteps.forEach((time) => {
-      html += '<div class="legend-compare-row">';
-      html += `<span class="legend-color" style="background:${COLORS_A[time]};opacity:0.8"></span>`;
-      html += `<span class="legend-label">${time}分</span>`;
-      html += `<span class="legend-color" style="background:${COLORS_B[time]};opacity:0.8"></span>`;
-      html += '</div>';
-    });
+    html += '<div class="legend-item">';
+    html += '<span class="legend-color" style="background:#c62828;opacity:0.8"></span>';
+    html += `<span class="legend-label">${stationB.name}のみ到達</span>`;
+    html += '</div>';
+    html += '<div class="legend-item">';
+    html += '<span class="legend-color" style="background:#7b1fa2;opacity:0.8"></span>';
+    html += '<span class="legend-label">両方から到達</span>';
+    html += '</div>';
   } else if (stationA) {
     // 単独モード
+    const displaySteps = [10, 20, 30, 40, 50, 60];
     html += '<div class="legend-title">移動時間</div>';
     displaySteps.forEach((time) => {
       html += '<div class="legend-item">';
@@ -301,13 +300,14 @@ function drawStationLayers(allIsochrones, colors, selectedTime) {
 
 /**
  * メイン: 地図を更新する
+ * 単独モード: 全時間帯グラデーション表示
+ * 比較モード: 選択時間のみ、A/B/重複を色分け表示
  */
 async function updateMap() {
   const selectA = document.getElementById("station-select");
   const selectB = document.getElementById("station-select-b");
   const slider = document.getElementById("time-slider");
 
-  // 駅Aが未選択ならクリア
   if (selectA.value === "") {
     clearOverlays();
     clearInfoPanel();
@@ -319,61 +319,103 @@ async function updateMap() {
   const stationB = selectB.value !== "" ? stations[parseInt(selectB.value)] : null;
   const selectedTime = snapTime(parseInt(slider.value));
 
-  // GeoJSON を取得（A は必須、B はオプション）
-  const fetchPromises = [fetchAllIsochrones(stationA.id)];
-  if (stationB) fetchPromises.push(fetchAllIsochrones(stationB.id));
-
-  const results = await Promise.all(fetchPromises);
-  const isochronesA = results[0];
-  const isochronesB = stationB ? results[1] : null;
-
-  // 既存のオーバーレイをクリア
   clearOverlays();
 
-  // 駅Aのレイヤーを描画（青系）
-  drawStationLayers(isochronesA, COLORS_A, selectedTime);
-
-  // 駅Bのレイヤーを描画（赤系）
-  if (isochronesB) {
-    drawStationLayers(isochronesB, COLORS_B, selectedTime);
+  if (stationB) {
+    // === 比較モード: 選択時間のみ表示 ===
+    await drawComparisonMode(stationA, stationB, selectedTime);
+  } else {
+    // === 単独モード: 全時間帯グラデーション ===
+    await drawSingleMode(stationA, selectedTime);
   }
 
-  // ズーム: 両方の最大範囲にフィット
+  updateLegend(stationA, stationB, selectedTime);
+  updateInfoPanel(stationA, stationB, selectedTime);
+}
+
+/**
+ * 単独モード: 全時間帯のグラデーション表示
+ */
+async function drawSingleMode(station, selectedTime) {
+  const allIsochrones = await fetchAllIsochrones(station.id);
+  drawStationLayers(allIsochrones, COLORS_A, selectedTime);
+
   if (isochroneLayers.length > 0) {
-    const allBounds = L.latLngBounds([]);
-    isochroneLayers.forEach((layer) => {
-      allBounds.extend(layer.getBounds());
-    });
-    map.fitBounds(allBounds, { padding: [30, 30] });
+    map.fitBounds(isochroneLayers[0].getBounds(), { padding: [30, 30] });
     showLegend(true);
   } else {
-    map.setView([stationA.lat, stationA.lng], 12);
+    map.setView([station.lat, station.lng], 12);
     showLegend(false);
   }
 
-  // マーカー: 駅A（青）
-  const markerA = L.marker([stationA.lat, stationA.lng], {
+  const marker = L.marker([station.lat, station.lng], {
     icon: createColoredIcon("#1a237e"),
+  })
+    .addTo(map)
+    .bindPopup(createPopupContent(station, selectedTime, "A"))
+    .openPopup();
+  markers.push(marker);
+}
+
+/**
+ * 比較モード: 選択した時間の到達圏を A だけ / B だけ / 両方 で色分け
+ */
+async function drawComparisonMode(stationA, stationB, selectedTime) {
+  const [geojsonA, geojsonB] = await Promise.all([
+    fetchIsochrone(stationA.id, selectedTime),
+    fetchIsochrone(stationB.id, selectedTime),
+  ]);
+
+  const allBounds = L.latLngBounds([]);
+
+  // 駅Aの到達圏（青）
+  if (geojsonA) {
+    const layerA = L.geoJSON(geojsonA, {
+      style: () => ({
+        color: "#1565c0",
+        fillColor: "#1565c0",
+        fillOpacity: 0.35,
+        weight: 2,
+      }),
+    }).addTo(map);
+    isochroneLayers.push(layerA);
+    allBounds.extend(layerA.getBounds());
+  }
+
+  // 駅Bの到達圏（赤）
+  if (geojsonB) {
+    const layerB = L.geoJSON(geojsonB, {
+      style: () => ({
+        color: "#c62828",
+        fillColor: "#c62828",
+        fillOpacity: 0.35,
+        weight: 2,
+      }),
+    }).addTo(map);
+    isochroneLayers.push(layerB);
+    allBounds.extend(layerB.getBounds());
+  }
+
+  // ズーム
+  if (allBounds.isValid()) {
+    map.fitBounds(allBounds, { padding: [30, 30] });
+    showLegend(true);
+  }
+
+  // マーカー
+  const markerA = L.marker([stationA.lat, stationA.lng], {
+    icon: createColoredIcon("#1565c0"),
   })
     .addTo(map)
     .bindPopup(createPopupContent(stationA, selectedTime, "A"));
   markers.push(markerA);
 
-  // マーカー: 駅B（赤）
-  if (stationB) {
-    const markerB = L.marker([stationB.lat, stationB.lng], {
-      icon: createColoredIcon("#b71c1c"),
-    })
-      .addTo(map)
-      .bindPopup(createPopupContent(stationB, selectedTime, "B"));
-    markers.push(markerB);
-  } else {
-    markerA.openPopup();
-  }
-
-  // 凡例と情報パネルを更新
-  updateLegend(stationA, stationB);
-  updateInfoPanel(stationA, stationB, selectedTime);
+  const markerB = L.marker([stationB.lat, stationB.lng], {
+    icon: createColoredIcon("#c62828"),
+  })
+    .addTo(map)
+    .bindPopup(createPopupContent(stationB, selectedTime, "B"));
+  markers.push(markerB);
 }
 
 /**
