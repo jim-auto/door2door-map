@@ -1,52 +1,40 @@
 // ============================================================
 // door2door-map - メインスクリプト
-// 交通経路ベースの到達圏ポリゴンを時間帯別グラデーションで表示する
+// 2駅比較モード対応: 駅A（青）と駅B（赤）の到達圏を重ねて表示
 // ============================================================
 
 // --- 定数 ---
-
-// スライダーの値を GeoJSON ファイル名の時間値にスナップ
-// (生成済み: 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60)
 const SNAP_VALUES = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60];
 
-// 時間帯ごとの色定義（短い時間=濃い色、長い時間=薄い色）
-const TIME_COLORS = {
-  10: "#1a237e",
-  15: "#283593",
-  20: "#303f9f",
-  25: "#3949ab",
-  30: "#3f51b5",
-  35: "#5c6bc0",
-  40: "#7986cb",
-  45: "#9fa8da",
-  50: "#b3c1e8",
-  55: "#c5cae9",
-  60: "#bbdefb",
+// 駅A（青系）の色定義
+const COLORS_A = {
+  10: "#1a237e", 15: "#283593", 20: "#303f9f", 25: "#3949ab",
+  30: "#3f51b5", 35: "#5c6bc0", 40: "#7986cb", 45: "#9fa8da",
+  50: "#b3c1e8", 55: "#c5cae9", 60: "#bbdefb",
 };
 
-// 各時間帯のポリゴン透明度（長い時間ほど薄く表示）
+// 駅B（赤系）の色定義
+const COLORS_B = {
+  10: "#b71c1c", 15: "#c62828", 20: "#d32f2f", 25: "#e53935",
+  30: "#ef5350", 35: "#ef6c6c", 40: "#e57373", 45: "#ef9a9a",
+  50: "#f4b4b4", 55: "#ffcdd2", 60: "#ffebee",
+};
+
+// 各時間帯の透明度
 const TIME_OPACITY = {
-  10: 0.50,
-  15: 0.45,
-  20: 0.40,
-  25: 0.38,
-  30: 0.35,
-  35: 0.32,
-  40: 0.28,
-  45: 0.25,
-  50: 0.22,
-  55: 0.20,
-  60: 0.18,
+  10: 0.45, 15: 0.40, 20: 0.35, 25: 0.32,
+  30: 0.30, 35: 0.27, 40: 0.24, 45: 0.21,
+  50: 0.18, 55: 0.16, 60: 0.14,
 };
 
 // --- グローバル変数 ---
 let map;
-let stationMarker = null;
-let isochroneLayers = [];       // 時間帯別レイヤーの配列
+let markers = [];               // 駅マーカーの配列
+let isochroneLayers = [];        // ポリゴンレイヤーの配列
 let stations = [];
-let geojsonCache = {};          // キャッシュ: "shibuya_30" → GeoJSON data
-let legendControl = null;       // 凡例コントロール
-let infoPanel = null;           // 駅情報パネルコントロール
+let geojsonCache = {};
+let legendControl = null;
+let infoPanel = null;
 
 // ============================================================
 // 初期化
@@ -58,9 +46,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
 });
 
-/**
- * Leaflet 地図を初期化する
- */
 function initMap() {
   map = L.map("map").setView([35.68, 139.76], 6);
 
@@ -70,31 +55,27 @@ function initMap() {
     maxZoom: 18,
   }).addTo(map);
 
-  // 凡例を初期化（初期状態は非表示）
   createLegend();
-
-  // 駅情報パネルを初期化
   createInfoPanel();
 }
 
-/**
- * stations.json を読み込み、ドロップダウンに反映する
- */
 async function loadStations() {
   try {
     const response = await fetch("data/stations.json");
     stations = await response.json();
-    populateDropdown(stations);
+    // 両方のドロップダウンに駅を追加
+    populateDropdown("station-select", stations);
+    populateDropdown("station-select-b", stations);
   } catch (error) {
     console.error("駅データの読み込みに失敗しました:", error);
   }
 }
 
 /**
- * 駅データからドロップダウンの選択肢を生成する (都市ごとにグループ化)
+ * ドロップダウンに駅を追加（都市ごとにグループ化）
  */
-function populateDropdown(stations) {
-  const select = document.getElementById("station-select");
+function populateDropdown(selectId, stations) {
+  const select = document.getElementById(selectId);
   const cities = [...new Set(stations.map((s) => s.city))];
 
   cities.forEach((city) => {
@@ -118,39 +99,59 @@ function populateDropdown(stations) {
 // 凡例コントロール
 // ============================================================
 
-/**
- * 地図右下にカラー凡例を作成する
- */
 function createLegend() {
   legendControl = L.control({ position: "bottomright" });
 
   legendControl.onAdd = function () {
     const div = L.DomUtil.create("div", "legend");
-    div.innerHTML = '<div class="legend-title">移動時間</div>';
-
-    // 表示する時間ステップ（5分刻みだと多いので10分刻みで主要なものを表示）
-    const displaySteps = [10, 20, 30, 40, 50, 60];
-
-    displaySteps.forEach((time) => {
-      div.innerHTML +=
-        `<div class="legend-item">` +
-        `<span class="legend-color" style="background:${TIME_COLORS[time]};opacity:${Math.min(TIME_OPACITY[time] + 0.3, 0.9)}"></span>` +
-        `<span class="legend-label">${time}分</span>` +
-        `</div>`;
-    });
-
+    div.id = "legend-content";
     return div;
   };
 
   legendControl.addTo(map);
-
-  // 初期状態は非表示
   legendControl.getContainer().style.display = "none";
 }
 
 /**
- * 凡例の表示・非表示を切り替える
+ * 凡例の内容を動的に更新する
  */
+function updateLegend(stationA, stationB) {
+  const div = document.getElementById("legend-content");
+  if (!div) return;
+
+  const displaySteps = [10, 20, 30, 40, 50, 60];
+  let html = "";
+
+  if (stationA && stationB) {
+    // 比較モード: 2列で表示
+    html += `<div class="legend-title">${stationA.name} vs ${stationB.name}</div>`;
+    html += '<div class="legend-compare-header">';
+    html += `<span class="legend-label-a">${stationA.name}</span>`;
+    html += '<span class="legend-label-time">時間</span>';
+    html += `<span class="legend-label-b">${stationB.name}</span>`;
+    html += '</div>';
+
+    displaySteps.forEach((time) => {
+      html += '<div class="legend-compare-row">';
+      html += `<span class="legend-color" style="background:${COLORS_A[time]};opacity:0.8"></span>`;
+      html += `<span class="legend-label">${time}分</span>`;
+      html += `<span class="legend-color" style="background:${COLORS_B[time]};opacity:0.8"></span>`;
+      html += '</div>';
+    });
+  } else if (stationA) {
+    // 単独モード
+    html += '<div class="legend-title">移動時間</div>';
+    displaySteps.forEach((time) => {
+      html += '<div class="legend-item">';
+      html += `<span class="legend-color" style="background:${COLORS_A[time]};opacity:${Math.min(TIME_OPACITY[time] + 0.3, 0.9)}"></span>`;
+      html += `<span class="legend-label">${time}分</span>`;
+      html += '</div>';
+    });
+  }
+
+  div.innerHTML = html;
+}
+
 function showLegend(visible) {
   if (legendControl) {
     legendControl.getContainer().style.display = visible ? "block" : "none";
@@ -161,9 +162,6 @@ function showLegend(visible) {
 // 駅情報パネル
 // ============================================================
 
-/**
- * 地図左上に駅情報パネルを作成する
- */
 function createInfoPanel() {
   infoPanel = L.control({ position: "topleft" });
 
@@ -176,35 +174,48 @@ function createInfoPanel() {
   infoPanel.addTo(map);
 }
 
-/**
- * 駅情報パネルの内容を更新する
- */
-function updateInfoPanel(station, selectedTime) {
+function updateInfoPanel(stationA, stationB, selectedTime) {
   if (!infoPanel) return;
-
   const container = infoPanel.getContainer();
-  container.innerHTML = `
-    <div class="info-header">駅情報</div>
-    <div class="info-body">
-      <div class="info-station-name">${station.name}駅</div>
-      <div class="info-city">${station.city}</div>
-      <div class="info-time">
-        選択中: <strong>${selectedTime}分</strong>圏
+
+  if (stationA && stationB) {
+    // 比較モード
+    container.innerHTML = `
+      <div class="info-header">駅比較</div>
+      <div class="info-body">
+        <div class="info-compare-row">
+          <span class="info-dot info-dot-a"></span>
+          <span class="info-station-name">${stationA.name}駅</span>
+          <span class="info-city">(${stationA.city})</span>
+        </div>
+        <div class="info-compare-row">
+          <span class="info-dot info-dot-b"></span>
+          <span class="info-station-name">${stationB.name}駅</span>
+          <span class="info-city">(${stationB.city})</span>
+        </div>
+        <div class="info-time">
+          選択中: <strong>${selectedTime}分</strong>圏
+        </div>
       </div>
-      <div class="info-coords">
-        ${station.lat.toFixed(4)}, ${station.lng.toFixed(4)}
+    `;
+  } else if (stationA) {
+    container.innerHTML = `
+      <div class="info-header">駅情報</div>
+      <div class="info-body">
+        <div class="info-station-name">${stationA.name}駅</div>
+        <div class="info-city">${stationA.city}</div>
+        <div class="info-time">
+          選択中: <strong>${selectedTime}分</strong>圏
+        </div>
       </div>
-    </div>
-  `;
+    `;
+  }
 }
 
-/**
- * 駅情報パネルを初期状態に戻す
- */
 function clearInfoPanel() {
   if (!infoPanel) return;
-  const container = infoPanel.getContainer();
-  container.innerHTML = '<p class="info-placeholder">駅を選択してください</p>';
+  infoPanel.getContainer().innerHTML =
+    '<p class="info-placeholder">駅を選択してください</p>';
 }
 
 // ============================================================
@@ -212,11 +223,13 @@ function clearInfoPanel() {
 // ============================================================
 
 function setupEventListeners() {
-  const select = document.getElementById("station-select");
+  const selectA = document.getElementById("station-select");
+  const selectB = document.getElementById("station-select-b");
   const slider = document.getElementById("time-slider");
   const timeValue = document.getElementById("time-value");
 
-  select.addEventListener("change", () => updateMap());
+  selectA.addEventListener("change", () => updateMap());
+  selectB.addEventListener("change", () => updateMap());
 
   slider.addEventListener("input", () => {
     timeValue.textContent = slider.value;
@@ -228,24 +241,15 @@ function setupEventListeners() {
 // GeoJSON 読み込み・地図更新
 // ============================================================
 
-/**
- * スライダー値を最寄りの生成済み時間値にスナップする
- */
 function snapTime(value) {
   return SNAP_VALUES.reduce((prev, curr) =>
     Math.abs(curr - value) < Math.abs(prev - value) ? curr : prev
   );
 }
 
-/**
- * isochrone GeoJSON を取得する (キャッシュ付き)
- */
 async function fetchIsochrone(stationId, timeMin) {
   const key = `${stationId}_${timeMin}`;
-
-  if (geojsonCache[key]) {
-    return geojsonCache[key];
-  }
+  if (geojsonCache[key]) return geojsonCache[key];
 
   try {
     const resp = await fetch(`data/isochrones/${key}.geojson`);
@@ -258,128 +262,158 @@ async function fetchIsochrone(stationId, timeMin) {
   }
 }
 
-/**
- * 選択された駅の全時間帯 GeoJSON を並列取得する
- */
 async function fetchAllIsochrones(stationId) {
   const promises = SNAP_VALUES.map((time) => fetchIsochrone(stationId, time));
   const results = await Promise.all(promises);
 
-  // { 10: geojsonData, 15: geojsonData, ... } の形で返す
   const isochroneMap = {};
   SNAP_VALUES.forEach((time, index) => {
-    if (results[index]) {
-      isochroneMap[time] = results[index];
-    }
+    if (results[index]) isochroneMap[time] = results[index];
   });
-
   return isochroneMap;
 }
 
 /**
- * 選択された駅と時間に基づいて地図を更新する
- * 全時間帯を同心円状のグラデーションレイヤーとして描画する
+ * 1駅分のポリゴンレイヤーを描画する
+ */
+function drawStationLayers(allIsochrones, colors, selectedTime) {
+  const sortedTimes = Object.keys(allIsochrones)
+    .map(Number)
+    .sort((a, b) => b - a);
+
+  sortedTimes.forEach((time) => {
+    const geojson = allIsochrones[time];
+    const isSelected = time === selectedTime;
+
+    const layer = L.geoJSON(geojson, {
+      style: () => ({
+        color: colors[time],
+        fillColor: colors[time],
+        fillOpacity: TIME_OPACITY[time],
+        weight: isSelected ? 2.5 : 0.8,
+        dashArray: isSelected ? null : "4 4",
+      }),
+    }).addTo(map);
+
+    isochroneLayers.push(layer);
+  });
+}
+
+/**
+ * メイン: 地図を更新する
  */
 async function updateMap() {
-  const select = document.getElementById("station-select");
+  const selectA = document.getElementById("station-select");
+  const selectB = document.getElementById("station-select-b");
   const slider = document.getElementById("time-slider");
 
-  if (select.value === "") {
+  // 駅Aが未選択ならクリア
+  if (selectA.value === "") {
     clearOverlays();
     clearInfoPanel();
     showLegend(false);
     return;
   }
 
-  const station = stations[parseInt(select.value)];
+  const stationA = stations[parseInt(selectA.value)];
+  const stationB = selectB.value !== "" ? stations[parseInt(selectB.value)] : null;
   const selectedTime = snapTime(parseInt(slider.value));
-  const latlng = [station.lat, station.lng];
 
-  // 全時間帯の GeoJSON を一括取得
-  const allIsochrones = await fetchAllIsochrones(station.id);
+  // GeoJSON を取得（A は必須、B はオプション）
+  const fetchPromises = [fetchAllIsochrones(stationA.id)];
+  if (stationB) fetchPromises.push(fetchAllIsochrones(stationB.id));
+
+  const results = await Promise.all(fetchPromises);
+  const isochronesA = results[0];
+  const isochronesB = stationB ? results[1] : null;
 
   // 既存のオーバーレイをクリア
   clearOverlays();
 
-  // 大きい時間帯（外側）から小さい時間帯（内側）の順にレイヤーを追加
-  // → 内側の濃い色が上に描画される
-  const sortedTimes = Object.keys(allIsochrones)
-    .map(Number)
-    .sort((a, b) => b - a);
+  // 駅Aのレイヤーを描画（青系）
+  drawStationLayers(isochronesA, COLORS_A, selectedTime);
 
-  if (sortedTimes.length > 0) {
-    sortedTimes.forEach((time) => {
-      const geojson = allIsochrones[time];
-      const isSelected = time === selectedTime;
+  // 駅Bのレイヤーを描画（赤系）
+  if (isochronesB) {
+    drawStationLayers(isochronesB, COLORS_B, selectedTime);
+  }
 
-      const layer = L.geoJSON(geojson, {
-        style: () => ({
-          color: TIME_COLORS[time],
-          fillColor: TIME_COLORS[time],
-          fillOpacity: TIME_OPACITY[time],
-          weight: isSelected ? 2.5 : 0.8,
-          // 選択中の時間帯は破線で強調
-          dashArray: isSelected ? null : "4 4",
-        }),
-      }).addTo(map);
-
-      isochroneLayers.push(layer);
+  // ズーム: 両方の最大範囲にフィット
+  if (isochroneLayers.length > 0) {
+    const allBounds = L.latLngBounds([]);
+    isochroneLayers.forEach((layer) => {
+      allBounds.extend(layer.getBounds());
     });
-
-    // 最大範囲（60分）にフィット
-    const outerLayer = isochroneLayers[0];
-    map.fitBounds(outerLayer.getBounds(), { padding: [30, 30] });
-
-    // 凡例を表示
+    map.fitBounds(allBounds, { padding: [30, 30] });
     showLegend(true);
   } else {
-    // GeoJSON がない場合は駅周辺にズーム
-    map.setView(latlng, 12);
+    map.setView([stationA.lat, stationA.lng], 12);
     showLegend(false);
   }
 
-  // 駅マーカー
-  stationMarker = L.marker(latlng)
+  // マーカー: 駅A（青）
+  const markerA = L.marker([stationA.lat, stationA.lng], {
+    icon: createColoredIcon("#1a237e"),
+  })
     .addTo(map)
-    .bindPopup(createPopupContent(station, selectedTime))
-    .openPopup();
+    .bindPopup(createPopupContent(stationA, selectedTime, "A"));
+  markers.push(markerA);
 
-  // 駅情報パネルを更新
-  updateInfoPanel(station, selectedTime);
+  // マーカー: 駅B（赤）
+  if (stationB) {
+    const markerB = L.marker([stationB.lat, stationB.lng], {
+      icon: createColoredIcon("#b71c1c"),
+    })
+      .addTo(map)
+      .bindPopup(createPopupContent(stationB, selectedTime, "B"));
+    markers.push(markerB);
+  } else {
+    markerA.openPopup();
+  }
+
+  // 凡例と情報パネルを更新
+  updateLegend(stationA, stationB);
+  updateInfoPanel(stationA, stationB, selectedTime);
 }
 
 /**
- * ポップアップの内容を生成する
+ * 色付きマーカーアイコンを作成する
  */
-function createPopupContent(station, timeMinutes) {
+function createColoredIcon(color) {
+  return L.divIcon({
+    className: "custom-marker",
+    html: `<div style="
+      background: ${color};
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      border: 3px solid white;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    "></div>`,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+    popupAnchor: [0, -12],
+  });
+}
+
+function createPopupContent(station, timeMinutes, label) {
+  const color = label === "A" ? "#1a237e" : "#b71c1c";
   return `
     <div class="popup-content">
-      <div class="popup-station">${station.name}駅</div>
+      <div class="popup-station" style="color:${color}">
+        駅${label}: ${station.name}駅
+      </div>
       <div class="popup-city">${station.city}</div>
       <hr class="popup-divider">
       <div class="popup-time">
         選択時間: <strong>${timeMinutes}分</strong>
       </div>
-      <div class="popup-note">
-        全時間帯（10〜60分）を表示中
-      </div>
     </div>
   `;
 }
 
-/**
- * 地図上のオーバーレイをすべて削除する
- */
 function clearOverlays() {
-  // 駅マーカーを削除
-  if (stationMarker) {
-    map.removeLayer(stationMarker);
-    stationMarker = null;
-  }
-
-  // 全時間帯レイヤーを削除
-  isochroneLayers.forEach((layer) => {
-    map.removeLayer(layer);
-  });
+  markers.forEach((m) => map.removeLayer(m));
+  markers = [];
+  isochroneLayers.forEach((layer) => map.removeLayer(layer));
   isochroneLayers = [];
 }
