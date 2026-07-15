@@ -439,7 +439,8 @@ def find_station_by_name(name, stations):
     return None
 
 
-def run_tests(region_name, cache_pattern, test_cases, speed_kmh=50):
+def run_tests(region_name, cache_pattern, test_cases, speed_kmh=TRAIN_SPEED_KMH,
+              overhead_min=BOARDING_OVERHEAD_MIN):
     cache = Path("scripts/cache")
     cache_files = list(cache.glob(cache_pattern))
     if not cache_files:
@@ -478,7 +479,7 @@ def run_tests(region_name, cache_pattern, test_cases, speed_kmh=50):
             print(f"{src_name:<8} {dst_name:<12} -- unreachable")
             continue
 
-        model_min = d_km / speed_kmh * 60
+        model_min = overhead_min + d_km / speed_kmh * 60
         diff = model_min - real_min
 
         if abs(diff) <= 5:
@@ -503,11 +504,12 @@ def run_tests(region_name, cache_pattern, test_cases, speed_kmh=50):
 
 
 if __name__ == "__main__":
-    speed = 50
+    speed = TRAIN_SPEED_KMH
+    overhead = BOARDING_OVERHEAD_MIN
     all_results = []
-    all_results += run_tests("Tokyo", "rail_35.69*", TEST_CASES_TOKYO, speed)
-    all_results += run_tests("Nagoya", "rail_35.17*", TEST_CASES_NAGOYA, speed)
-    all_results += run_tests("Osaka", "rail_34.68*", TEST_CASES_OSAKA, speed)
+    all_results += run_tests("Tokyo", "rail_35.69*", TEST_CASES_TOKYO, speed, overhead)
+    all_results += run_tests("Nagoya", "rail_35.17*", TEST_CASES_NAGOYA, speed, overhead)
+    all_results += run_tests("Osaka", "rail_34.68*", TEST_CASES_OSAKA, speed, overhead)
 
     if all_results:
         diffs = [abs(r[5]) for r in all_results]
@@ -517,7 +519,7 @@ if __name__ == "__main__":
         avg = sum(diffs) / len(diffs)
         total = len(all_results)
         print(f"\n{'='*80}")
-        print(f" TOTAL @{speed}km/h: {total} tests")
+        print(f" TOTAL @{speed}km/h +{overhead}min overhead: {total} tests")
         print(f" OK(+-5m): {ok} ({ok*100//total}%)  ~(+-10m): {approx} ({approx*100//total}%)  NG(>10m): {ng} ({ng*100//total}%)")
         print(f" avg_err: {avg:.1f}min")
         print(f"{'='*80}")

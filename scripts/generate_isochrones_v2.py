@@ -24,7 +24,12 @@ from shapely.geometry import LineString, MultiPoint, Point, mapping, shape
 from shapely.ops import unary_union
 
 # === 定数 ===
-TRAIN_SPEED_KMH = 50        # 電車の表定速度 (テスト139区間で平均誤差4.4分)
+# 所要時間モデル: time = BOARDING_OVERHEAD_MIN + rail_km / TRAIN_SPEED_KMH * 60
+# アフィンモデル。乗車オーバーヘッド項が、短距離が駅停車・乗車時間に支配される
+# 効果を捉える。257区間の実測で OK(±5分) 79% / 平均誤差 3.5分
+# (単一速度モデルでは 69% / 4.1分 が上限だった)
+TRAIN_SPEED_KMH = 59        # 電車の線形表定速度
+BOARDING_OVERHEAD_MIN = 4   # 乗車オーバーヘッド (乗車・初期加速・駅アクセス)
 WALK_SPEED_KMH = 5          # 徒歩速度
 STATION_SNAP_DIST_M = 500   # 駅を路線にスナップする最大距離 (m)
 TRANSFER_PENALTY_MIN = 5    # 乗換ペナルティ (ホーム移動+待ち時間)
@@ -386,8 +391,8 @@ def generate_isochrone(hub, stations_dict, distances_km, time_min):
     buffers.append(MultiPoint(hub_pts).convex_hull)
 
     for sid, rail_km in distances_km.items():
-        # 路線距離から所要時間を算出
-        train_min = (rail_km / TRAIN_SPEED_KMH) * 60
+        # 路線距離から所要時間を算出 (アフィンモデル)
+        train_min = BOARDING_OVERHEAD_MIN + (rail_km / TRAIN_SPEED_KMH) * 60
 
         if train_min >= time_min:
             continue
